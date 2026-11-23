@@ -5,6 +5,11 @@ plugins {
 }
 
 android {
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
     namespace = "com.noorvpn.noorvpn"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion

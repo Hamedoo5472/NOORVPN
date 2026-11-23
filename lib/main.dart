@@ -36,9 +36,11 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final List<String> cores = ['Smart Auto', 'Sing-box', 'WARP', 'Psiphon'];
+  final List<String> _logs = ['Ready. Tap START to connect.'];
   String selectedCore = 'Smart Auto';
   bool isConnected = false;
   bool isConnecting = false;
+  bool _isInitialized = false;
   bool _cancelRequested = false;
   String statusText = 'Disconnected';
   String _activeRemark = 'NOORVPN';
@@ -60,16 +62,39 @@ class _HomeScreenState extends State<HomeScreen> {
             isConnected = true;
             isConnecting = false;
             statusText = 'Connected ($_activeRemark)';
+            _addLog('Tunnel connected!');
           } else if (state == 'DISCONNECTED') {
+            final wasConnected = isConnected;
             isConnected = false;
-            if (!isConnecting) {
+            if (wasConnected) {
               statusText = 'Disconnected';
+              _addLog('Tunnel disconnected.');
             }
           }
         });
       },
     );
-    _v2ray.initializeV2Ray();
+    _initCore();
+  }
+
+  Future<void> _initCore() async {
+    try {
+      await _v2ray.initializeV2Ray();
+      _isInitialized = true;
+      _addLog('VPN core initialized.');
+    } catch (e) {
+      _addLog('Core init error: $e');
+    }
+  }
+
+  void _addLog(String message) {
+    if (!mounted) return;
+    setState(() {
+      _logs.add(message);
+      if (_logs.length > 6) {
+        _logs.removeAt(0);
+      }
+    });
   }
 
   Future<void> _loadSelectedCore() async {
@@ -91,6 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _toggleConnection() async {
     if (isConnected || isConnecting) {
       _cancelRequested = true;
+      _addLog('Stopping connection...');
       await _v2ray.stopV2Ray();
       if (!mounted) return;
       setState(() {
@@ -103,37 +129,49 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _cancelRequested = false;
     setState(() {
+      _logs.clear();
       isConnecting = true;
-      statusText = 'Requesting VPN permission...';
+      statusText = 'Initializing VPN core...';
     });
 
-    final bool hasPermission = await _v2ray.requestPermission();
+    if (!_isInitialized) {
+      await _initCore();
+    }
+
+    setState(() => statusText = 'Requesting VPN permission...');
+    bool hasPermission = false;
+    try {
+      hasPermission = await _v2ray.requestPermission();
+    } catch (e) {
+      _addLog('Permission error: $e');
+    }
+
     if (!mounted) return;
     if (!hasPermission) {
       setState(() {
         isConnecting = false;
         statusText = 'VPN permission denied';
       });
+      _addLog('Permission denied by Android.');
       return;
     }
 
     setState(() => statusText = 'Fetching auto configs...');
-    final List<String> allConfigs = await ConfigService.fetchAutoConfigs();
+    _addLog('Fetching configs from CDN...');
+    final fetchResult = await ConfigService.fetchWithLogs();
     if (!mounted || _cancelRequested) return;
 
-    final List<String> xrayConfigs = allConfigs
-        .where((c) =>
-            c.startsWith('vless://') ||
-            c.startsWith('vmess://') ||
-            c.startsWith('trojan://') ||
-            c.startsWith('ss://'))
-        .toList();
+    for (final line in fetchResult.logs) {
+      _addLog(line);
+    }
 
+    final List<String> xrayConfigs = fetchResult.configs;
     if (xrayConfigs.isEmpty) {
       setState(() {
         isConnecting = false;
-        statusText = 'No configs found. Check internet.';
+        statusText = 'No configs found (check net)';
       });
+      _addLog('All sources failed.');
       return;
     }
 
@@ -168,6 +206,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (delay > 0) {
           bestConfigJson = fullConfig;
           bestRemark = '$remark (${delay}ms)';
+          _addLog('Found working server: ${delay}ms');
           break;
         }
       } catch (_) {
@@ -186,7 +225,12 @@ class _HomeScreenState extends State<HomeScreen> {
         isConnecting = false;
         statusText = 'No valid server found';
       });
+      _addLog('Could not parse any valid config.');
       return;
+    }
+
+    if (bestConfigJson == null) {
+      _addLog('Ping failed, trying fallback server...');
     }
 
     setState(() {
@@ -200,12 +244,14 @@ class _HomeScreenState extends State<HomeScreen> {
         config: finalConfig,
         proxyOnly: false,
       );
+      _addLog('startV2Ray called.');
     } catch (e) {
       if (!mounted) return;
       setState(() {
         isConnecting = false;
         statusText = 'Connection failed';
       });
+      _addLog('Start error: $e');
     }
   }
 
@@ -238,7 +284,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           child: Column(
             children: [
               const Text(
@@ -249,7 +295,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   letterSpacing: 1.5,
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -274,8 +320,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 onTap: _toggleConnection,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 300),
-                  width: 190,
-                  height: 190,
+                  width: 180,
+                  height: 180,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: const Color(0xFF161B22),
@@ -293,7 +339,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       Icon(
                         Icons.power_settings_new_rounded,
-                        size: 72,
+                        size: 68,
                         color: isConnected
                             ? const Color(0xFF00E5A0)
                             : Colors.white,
@@ -311,7 +357,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               Text(
                 statusText,
                 textAlign: TextAlign.center,
@@ -324,7 +370,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               if (isConnected && _v2rayStatus != null) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 Text(
                   'Time: ${_v2rayStatus!.duration}   •   ↓ ${_formatSpeed(_v2rayStatus!.downloadSpeed)}   ↑ ${_formatSpeed(_v2rayStatus!.uploadSpeed)}',
                   style: const TextStyle(color: Colors.white54, fontSize: 12),
@@ -333,38 +379,36 @@ class _HomeScreenState extends State<HomeScreen> {
               const Spacer(),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: const Color(0xFF161B22),
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: const Color(0xFF30363D)),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Auto Config Mode',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          isConnected ? _activeRemark : 'Zero-config engine ready',
-                          style: const TextStyle(color: Colors.white54, fontSize: 12),
-                        ),
-                      ],
+                    const Text(
+                      'LIVE LOGS',
+                      style: TextStyle(
+                        color: Color(0xFF00E5A0),
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
+                      ),
                     ),
-                    Icon(
-                      Icons.bolt_rounded,
-                      color: isConnected
-                          ? const Color(0xFF00E5A0)
-                          : Colors.white54,
-                    ),
+                    const SizedBox(height: 6),
+                    for (final log in _logs)
+                      Text(
+                        '> $log',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
                   ],
                 ),
               ),
